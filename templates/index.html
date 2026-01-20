@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Home Monitor</title>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- FontAwesome per le icone -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --bg-color: #eef2f6;
+            --card-bg: #ffffff;
+            --primary: #4361ee;
+            --danger: #ef476f;
+            --success: #06d6a0;
+            --text-main: #2b2d42;
+            --text-light: #8d99ae;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Poppins', sans-serif;
+            background: var(--bg-color);
+            color: var(--text-main);
+            padding: 20px;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        header h1 {
+            font-size: 2rem;
+            margin-bottom: 5px;
+        }
+
+        header p { color: var(--text-light); }
+
+        /* GRID LAYOUT RESPONSIVO */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        /* CARD FLIP LOGIC */
+        .card-container {
+            perspective: 1000px;
+            height: 420px;
+            cursor: pointer;
+        }
+
+        .card-inner {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            text-align: center;
+            transition: transform 0.6s cubic-bezier(0.4, 0.2, 0.2, 1);
+            transform-style: preserve-3d;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+            border-radius: 20px;
+        }
+
+        .card-container.flipped .card-inner {
+            transform: rotateY(180deg);
+        }
+
+        .card-face {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            backface-visibility: hidden;
+            border-radius: 20px;
+            background: var(--card-bg);
+            padding: 25px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .card-face.back {
+            transform: rotateY(180deg);
+            background: #fff;
+        }
+
+        /* FRONT DESIGN */
+        .room-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: var(--text-light);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .room-title i { color: var(--primary); }
+
+        .metrics-container {
+            display: flex;
+            justify-content: space-around;
+            margin-bottom: 20px;
+        }
+
+        .metric {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .metric-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--text-main);
+            transition: color 0.3s;
+        }
+
+        .metric-label {
+            font-size: 0.9rem;
+            color: var(--text-light);
+            margin-top: 5px;
+        }
+
+        /* Status Colors */
+        .hot { color: var(--danger) !important; }
+        .normal { color: var(--text-main) !important; }
+
+        .chart-mini-container {
+            height: 120px;
+            width: 100%;
+        }
+        
+        .hint {
+            font-size: 0.8rem;
+            color: var(--text-light);
+            margin-top: 10px;
+            opacity: 0.7;
+        }
+
+        /* BACK DESIGN */
+        .chart-full-container {
+            height: 140px;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        
+        h3 { font-size: 1rem; margin-bottom: 5px; color: var(--text-main); }
+
+    </style>
+</head>
+<body>
+
+<header>
+    <h1><i class="fa-solid fa-house-signal"></i> Smart Home Monitor</h1>
+    <p>Monitoraggio in tempo reale • Aggiornamento ogni 2s</p>
+</header>
+
+<div class="dashboard-grid">
+    <!-- JINJA2 LOOP: Genera le card in base ai dati Python -->
+    {% for room in rooms %}
+    <div class="card-container" onclick="flipCard(this)">
+        <div class="card-inner">
+            
+            <!-- FRONT: Valori Istantanei -->
+            <div class="card-face front">
+                <div class="room-title">
+                    {{ room.name }}
+                    <i class="fa-solid fa-layer-group"></i>
+                </div>
+                
+                <div class="metrics-container">
+                    <!-- Temperatura -->
+                    <div class="metric">
+                        <span id="temp-{{ room.id }}" class="metric-value">--</span>
+                        <div class="metric-label"><i class="fa-solid fa-temperature-half"></i> °C</div>
+                    </div>
+                    <!-- Umidità -->
+                    <div class="metric">
+                        <span id="hum-{{ room.id }}" class="metric-value" style="color: var(--primary)">--</span>
+                        <div class="metric-label"><i class="fa-solid fa-droplet"></i> %</div>
+                    </div>
+                </div>
+
+                <!-- Grafico a ciambella per Umidità -->
+                <div class="chart-mini-container">
+                    <canvas id="chart-doughnut-{{ room.id }}"></canvas>
+                </div>
+                
+                <div class="hint"><i class="fa-solid fa-rotate"></i> Clicca per lo storico</div>
+            </div>
+
+            <!-- BACK: Grafici Storici -->
+            <div class="card-face back">
+                <div class="room-title">{{ room.name }} - Storico</div>
+                
+                <div>
+                    <h3>Temperatura</h3>
+                    <div class="chart-full-container">
+                        <canvas id="chart-line-temp-{{ room.id }}"></canvas>
+                    </div>
+                </div>
+                
+                <div>
+                    <h3>Umidità</h3>
+                    <div class="chart-full-container">
+                        <canvas id="chart-line-hum-{{ room.id }}"></canvas>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<script>
+    // --- SETUP INIZIALE ---
+    const roomIds = {{ rooms | tojson | safe }}.map(r => r.id);
+    const charts = {};
+    const MAX_DATA_POINTS = 20;
+
+    function flipCard(element) {
+        element.classList.toggle("flipped");
+    }
+
+    // --- CONFIGURAZIONE GRAFICI ---
+    
+    // Configurazione comune per i grafici a linea (minimale)
+    const commonLineOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+            x: { display: false }, // Nascondi asse X per pulizia
+            y: { beginAtZero: false, grid: { color: '#f0f0f0' } }
+        },
+        elements: { point: { radius: 0, hitRadius: 10 } } // Nascondi punti per linea pulita
+    };
+
+    function initCharts() {
+        roomIds.forEach(id => {
+            // 1. Line Chart Temp (Back)
+            const ctxTemp = document.getElementById(`chart-line-temp-${id}`).getContext('2d');
+            charts[`temp_${id}`] = new Chart(ctxTemp, {
+                type: 'line',
+                data: { labels: [], datasets: [{ data: [], borderColor: '#ef476f', borderWidth: 2, tension: 0.4, fill: true, backgroundColor: 'rgba(239, 71, 111, 0.1)' }] },
+                options: commonLineOptions
+            });
+
+            // 2. Line Chart Hum (Back)
+            const ctxHum = document.getElementById(`chart-line-hum-${id}`).getContext('2d');
+            charts[`hum_${id}`] = new Chart(ctxHum, {
+                type: 'line',
+                data: { labels: [], datasets: [{ data: [], borderColor: '#4361ee', borderWidth: 2, tension: 0.4, fill: true, backgroundColor: 'rgba(67, 97, 238, 0.1)' }] },
+                options: commonLineOptions
+            });
+
+            // 3. Doughnut Chart (Front)
+            const ctxDough = document.getElementById(`chart-doughnut-${id}`).getContext('2d');
+            charts[`dough_${id}`] = new Chart(ctxDough, {
+                type: 'doughnut',
+                data: {
+                    labels: ["Umidità", "Vuoto"],
+                    datasets: [{
+                        data: [0, 100],
+                        backgroundColor: ['#4361ee', '#e0e0e0'],
+                        borderWidth: 0,
+                        circumference: 180,
+                        rotation: 270,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { tooltip: { enabled: false }, legend: { display: false } },
+                    cutout: '75%'
+                }
+            });
+        });
+    }
+
+    // --- LOGICA AGGIORNAMENTO DATI ---
+    async function fetchData() {
+        try {
+            const response = await fetch('/api/data');
+            const data = await response.json();
+
+            roomIds.forEach(id => {
+                const roomData = data[id];
+                if(!roomData) return;
+
+                // Aggiorna TESTO Front
+                const tempEl = document.getElementById(`temp-${id}`);
+                const humEl = document.getElementById(`hum-${id}`);
+                
+                tempEl.textContent = roomData.temperature;
+                humEl.textContent = roomData.humidity;
+
+                // Logica visuale: se T > 27 diventa rosso
+                if (roomData.temperature > 27) {
+                    tempEl.classList.add('hot');
+                    tempEl.classList.remove('normal');
+                } else {
+                    tempEl.classList.add('normal');
+                    tempEl.classList.remove('hot');
+                }
+
+                // Aggiorna CHART Doughnut (Front)
+                charts[`dough_${id}`].data.datasets[0].data = [roomData.humidity, 100 - roomData.humidity];
+                // Cambia colore doughnut se umidità è troppa (>70%)
+                const humColor = roomData.humidity > 70 ? '#06d6a0' : '#4361ee'; 
+                charts[`dough_${id}`].data.datasets[0].backgroundColor[0] = humColor;
+                charts[`dough_${id}`].update();
+
+                // Aggiorna CHART Lineari (Back)
+                // Helper per aggiornare array chart.js
+                const pushData = (chart, label, value) => {
+                    chart.data.labels.push(label);
+                    chart.data.datasets[0].data.push(value);
+                    if (chart.data.labels.length > MAX_DATA_POINTS) {
+                        chart.data.labels.shift();
+                        chart.data.datasets[0].data.shift();
+                    }
+                    chart.update('none'); // 'none' per animazione più performante
+                };
+
+                pushData(charts[`temp_${id}`], roomData.timestamp, roomData.temperature);
+                pushData(charts[`hum_${id}`], roomData.timestamp, roomData.humidity);
+            });
+
+        } catch (error) {
+            console.error("Errore fetch dati:", error);
+        }
+    }
+
+    // Avvio
+    initCharts();
+    setInterval(fetchData, 2000); // Aggiorna ogni 2 secondi
+    fetchData(); // Prima chiamata immediata
+
+</script>
+
+</body>
+</html>
