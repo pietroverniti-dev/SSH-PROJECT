@@ -1,0 +1,144 @@
+:root {
+    --bg-color: #eef2f6;
+    --card-bg: #ffffff;
+    --primary: #4361ee;
+    --danger: #ef476f;
+    --success: #06d6a0;
+    --text-main: #2b2d42;
+    --text-light: #8d99ae;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: 'Poppins', sans-serif;
+    background: var(--bg-color);
+    color: var(--text-main);
+    padding: 20px;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 40px;
+}
+
+header h1 {
+    font-size: 2rem;
+    margin-bottom: 5px;
+}
+
+header p { color: var(--text-light); }
+
+/* GRID LAYOUT */
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 30px;
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+/* CARD FLIP LOGIC */
+.card-container {
+    perspective: 1000px;
+    height: 420px;
+    cursor: pointer;
+}
+
+.card-inner {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    text-align: center;
+    transition: transform 0.6s cubic-bezier(0.4, 0.2, 0.2, 1);
+    transform-style: preserve-3d;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+    border-radius: 20px;
+}
+
+.card-container.flipped .card-inner {
+    transform: rotateY(180deg);
+}
+
+.card-face {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    backface-visibility: hidden;
+    border-radius: 20px;
+    background: var(--card-bg);
+    padding: 25px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+.card-face.back {
+    transform: rotateY(180deg);
+    background: #fff;
+}
+
+/* FRONT DESIGN */
+.room-title {
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: var(--text-light);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.room-title i { color: var(--primary); }
+
+.metrics-container {
+    display: flex;
+    justify-content: space-around;
+    margin-bottom: 20px;
+}
+
+.metric {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.metric-value {
+    font-size: 2.5rem;
+    font-weight: 700;
+    color: var(--text-main);
+    transition: color 0.3s;
+}
+
+.metric-label {
+    font-size: 0.9rem;
+    color: var(--text-light);
+    margin-top: 5px;
+}
+
+/* Status Colors */
+.hot { color: var(--danger) !important; }
+.normal { color: var(--text-main) !important; }
+
+.chart-mini-container {
+    height: 120px;
+    width: 100%;
+}
+
+.hint {
+    font-size: 0.8rem;
+    color: var(--text-light);
+    margin-top: 10px;
+    opacity: 0.7;
+}
+
+/* BACK DESIGN */
+.chart-full-container {
+    height: 140px;
+    width: 100%;
+    margin-bottom: 10px;
+}
+
+h3 { font-size: 1rem; margin-bottom: 5px; color: var(--text-main); }
