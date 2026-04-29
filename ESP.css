@@ -1,0 +1,264 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_BMP280.h>
+#include <Adafruit_AHTX0.h>
+
+// ===================== PIN I2C CONFIGURABILI =====================
+#define SDA_PIN 17
+#define SCL_PIN 16
+
+// ===================== OLED =====================
+#define OLED_RST -1
+#define ROW 64
+#define COL 128
+
+Adafruit_SSD1306 display(COL, ROW, &Wire, OLED_RST);
+
+// ===================== BMP280 =====================
+Adafruit_BMP280 bmp;
+
+// ===================== AHT20 =====================
+Adafruit_AHTX0 aht;
+
+// ===================== TIMER =====================
+hw_timer_t * timer0 = NULL;
+unsigned long lastMs = 0;
+unsigned int period = 1000;
+
+// ===================== VARIABILI SENSORI =====================
+bool useBmp = true;
+
+float tBmp, pBmp;
+float tAht, hAht;
+
+unsigned long totSec;
+unsigned int minutes, seconds;
+
+// ===================== MOTORE 1 (L298N A) =====================
+#define ENA 13
+#define IN1 12
+#define IN2 14
+
+// ===================== MOTORE 2 (L298N B) =====================
+#define ENB 25
+#define IN3 27
+#define IN4 26
+
+#define BUTTON_PIN 0
+#define LED_PIN 33
+
+#define DEBOUNCE_MS 50
+#define motor1 1
+#define CW 1
+#define CCW 0
+
+// PWM
+const int PWM_CHANNEL_A = 0;
+const int PWM_CHANNEL_B = 1;
+const int PWM_FREQ = 20000;
+const int PWM_RES = 8;
+
+bool motorOn = false;
+bool autoMode = true;
+int direction = CW;
+const int desiredSpeedPercent = 100;
+
+unsigned long lastDebounceTime = 0;
+int lastButtonState = HIGH;
+int buttonState = HIGH;
+unsigned long manualTimer = 0;
+
+// ===================== SOGLIE AUTOMATICHE =====================
+#define HUM_THRESHOLD 70
+#define TEMP_THRESHOLD 28
+
+// ===================== CLASSE MOTORE =====================
+class Robojax_L298N_DC_motor {
+  public:
+    Robojax_L298N_DC_motor(int in1, int in2, int ena, int pwmChannel)
+      : _in1(in1), _in2(in2), _ena(ena), _pwmChannel(pwmChannel) {}
+
+    void begin() {
+      pinMode(_in1, OUTPUT);
+      pinMode(_in2, OUTPUT);
+      pinMode(_ena, OUTPUT);
+      ledcSetup(_pwmChannel, PWM_FREQ, PWM_RES);
+      ledcAttachPin(_ena, _pwmChannel);
+      coast();
+    }
+
+    void rotate(int motorId, int speedPercent, int direction) {
+      uint8_t duty = map(speedPercent, 0, 100, 0, 255);
+
+      if (direction == CW) {
+        digitalWrite(_in1, HIGH);
+        digitalWrite(_in2, LOW);
+      } else {
+        digitalWrite(_in1, LOW);
+        digitalWrite(_in2, HIGH);
+      }
+
+      ledcWrite(_pwmChannel, duty);
+    }
+
+    void coast() {
+      ledcWrite(_pwmChannel, 0);
+      digitalWrite(_in1, LOW);
+      digitalWrite(_in2, LOW);
+    }
+
+  private:
+    int _in1, _in2, _ena, _pwmChannel;
+};
+
+// ===================== ISTANZE MOTORI =====================
+Robojax_L298N_DC_motor motorA(IN1, IN2, ENA, PWM_CHANNEL_A);
+Robojax_L298N_DC_motor motorB(IN3, IN4, ENB, PWM_CHANNEL_B);
+
+// ===================== CONTROLLO AUTOMATICO =====================
+void checkAutoControl() {
+  if (!autoMode) return;
+
+  sensors_event_t hum, temp;
+  aht.getEvent(&hum, &temp);
+
+  float h = hum.relative_humidity;
+  float t = temp.temperature;
+
+  if (isnan(h) || isnan(t)) return;
+
+  if (h > HUM_THRESHOLD) {
+    motorOn = true;
+    direction = CCW;
+    motorA.rotate(1, desiredSpeedPercent, direction);
+    motorB.rotate(1, desiredSpeedPercent, direction);
+    digitalWrite(LED_PIN, HIGH);
+    return;
+  }
+
+  if (t > TEMP_THRESHOLD) {
+    motorOn = true;
+    direction = CW;
+    motorA.rotate(1, desiredSpeedPercent, direction);
+    motorB.rotate(1, desiredSpeedPercent, direction);
+    digitalWrite(LED_PIN, HIGH);
+    return;
+  }
+
+  motorOn = false;
+  motorA.coast();
+  motorB.coast();
+  digitalWrite(LED_PIN, LOW);
+}
+
+// ===================== SETUP =====================
+void setup() {
+  Serial.begin(9600);
+
+  timer0 = timerBegin(0, 80, true);
+  timerStart(timer0);
+
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  while (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("Display non trovato");
+  }
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+
+  while (!bmp.begin(0x77)) {
+    Serial.println("BMP280 non trovato");
+  }
+
+  while (!aht.begin()) {
+    Serial.println("AHT20 non trovato");
+  }
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(LED_PIN, OUTPUT);
+
+  motorA.begin();
+  motorB.begin();
+
+  motorA.coast();
+  motorB.coast();
+
+  Serial.println("Sistema completo avviato.");
+}
+
+// ===================== LOOP =====================
+void loop() {
+
+  totSec = timerRead(timer0) / 1000000;
+  minutes = totSec / 60;
+  seconds = totSec % 60;
+
+  int reading = digitalRead(BUTTON_PIN);
+  if (reading != lastButtonState) lastDebounceTime = millis();
+
+  if ((millis() - lastDebounceTime) > DEBOUNCE_MS) {
+    if (reading != buttonState) {
+      buttonState = reading;
+
+      if (buttonState == LOW) {
+        autoMode = false;
+        manualTimer = millis();
+
+        motorOn = !motorOn;
+
+        if (motorOn) {
+          direction = (direction == CW ? CCW : CW);
+          motorA.rotate(1, desiredSpeedPercent, direction);
+          motorB.rotate(1, desiredSpeedPercent, direction);
+          digitalWrite(LED_PIN, HIGH);
+        } else {
+          motorA.coast();
+          motorB.coast();
+          digitalWrite(LED_PIN, LOW);
+        }
+      }
+    }
+  }
+  lastButtonState = reading;
+
+  if (!autoMode && millis() - manualTimer > 30000) {
+    autoMode = true;
+  }
+
+  checkAutoControl();
+
+  if ((millis() - lastMs) > period) {
+    lastMs = millis();
+
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.printf("%02d:%02d\n", minutes, seconds);
+
+    if (useBmp) {
+      tBmp = bmp.readTemperature();
+      pBmp = bmp.readPressure() / 100.0;
+
+      display.println("BMP:");
+      display.println("T: " + String(tBmp,1) + " C");
+      display.println("P: " + String(pBmp,1) + " hPa");
+    }
+    else {
+      sensors_event_t hum, temp;
+      aht.getEvent(&hum, &temp);
+
+      tAht = temp.temperature;
+      hAht = hum.relative_humidity;
+
+      display.println("AHT20:");
+      display.println("T: " + String(tAht,1) + " C");
+      display.println("H: " + String(hAht,1) + "%");
+    }
+
+    display.display();
+    useBmp = !useBmp;
+  }
+
+  delay(50);
+}
