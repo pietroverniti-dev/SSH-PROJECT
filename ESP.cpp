@@ -1,3 +1,113 @@
+/*
+ * ================================================================
+ *  STAZIONE METEO + CONTROLLO VENTOLA  —  Web Dashboard v2
+ *  Hardware : ESP32 | BMP280 | AHT20 | SSD1306 | L298N (x2)
+ *  Librerie : Adafruit_SSD1306, Adafruit_BMP280, Adafruit_AHTX0,
+ *             WiFi, WebServer (built-in ESP32 Arduino core)
+ * ================================================================
+ */
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_BMP280.h>
+#include <Adafruit_AHTX0.h>
+#include <WiFi.h>
+#include <WebServer.h>
+
+// ===================== CREDENZIALI WIFI =====================
+#define WIFI_SSID "sr1777"
+#define WIFI_PASS "milanmilan"
+
+// ===================== PIN I2C =====================
+#define SDA_PIN 17
+#define SCL_PIN 16
+
+// ===================== OLED =====================
+#define OLED_RST -1
+#define ROW 64
+#define COL 128
+Adafruit_SSD1306 display(COL, ROW, &Wire, OLED_RST);
+
+// ===================== SENSORI =====================
+Adafruit_BMP280 bmp;
+Adafruit_AHTX0  aht;
+
+// ===================== TIMER =====================
+hw_timer_t *timer0 = NULL;
+unsigned long lastMs = 0;
+const unsigned int period = 1000;
+
+bool  useBmp = true;
+float tBmp, pBmp, tAht, hAht;
+unsigned long totSec;
+unsigned int  minutes, seconds;
+
+// ===================== MOTORI (L298N) =====================
+#define ENA 13
+#define IN1 12
+#define IN2 14
+#define ENB 25
+#define IN3 27
+#define IN4 26
+
+#define BUTTON_PIN  0
+#define LED_PIN    33
+#define DEBOUNCE_MS 50
+#define CW  1
+#define CCW 0
+
+const int PWM_CHANNEL_A   = 0;
+const int PWM_CHANNEL_B   = 1;
+const int PWM_FREQ        = 20000;
+const int PWM_RES         = 8;
+const int desiredSpeedPct = 100;
+
+bool motorOn   = false;
+bool autoMode  = true;
+int  direction = CW;
+
+unsigned long lastDebounceTime = 0;
+int  lastButtonState = HIGH;
+int  buttonState     = HIGH;
+unsigned long manualTimer = 0;
+
+// ===================== SOGLIE AUTO =====================
+#define HUM_THRESHOLD  70
+#define TEMP_THRESHOLD 28
+
+// ===================== STORICO (buffer circolare) =====================
+#define HISTORY_SIZE 120  // 2 minuti a 1 campione/s
+
+struct History {
+  float tBmp [HISTORY_SIZE] = {};
+  float pBmp [HISTORY_SIZE] = {};
+  float tAht [HISTORY_SIZE] = {};
+  float hAht [HISTORY_SIZE] = {};
+  uint8_t fan[HISTORY_SIZE] = {};
+  unsigned long ts[HISTORY_SIZE] = {};
+  int head  = 0;
+  int count = 0;
+} hist;
+
+void histPush(float tb, float pb, float ta, float ha, bool fan) {
+  hist.tBmp[hist.head] = tb;
+  hist.pBmp[hist.head] = pb;
+  hist.tAht[hist.head] = ta;
+  hist.hAht[hist.head] = ha;
+  hist.fan [hist.head] = fan ? 1 : 0;
+  hist.ts  [hist.head] = totSec;
+  hist.head = (hist.head + 1) % HISTORY_SIZE;
+  if (hist.count < HISTORY_SIZE) hist.count++;
+}
+
+// ===================== WEB SERVER =====================
+WebServer server(80);
+
+// ----------------------------------------------------------------
+//  HTML DASHBOARD  (PROGMEM)
+// ----------------------------------------------------------------
+static const char HTML_PAGE[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html lang="it">
 <head>
@@ -610,3 +720,276 @@
     </script>
 </body>
 </html>
+)rawliteral";
+
+// ----------------------------------------------------------------
+//  ENDPOINT  /data  →  JSON
+// ----------------------------------------------------------------
+void handleData() {
+  String json = "{";
+
+  json += "\"tBmp\":"    + String(tBmp, 2)       + ",";
+  json += "\"pBmp\":"    + String(pBmp, 2)       + ",";
+  json += "\"tAht\":"    + String(tAht, 2)       + ",";
+  json += "\"hAht\":"    + String(hAht, 2)       + ",";
+  json += "\"fanOn\":"   + String(motorOn  ? "true" : "false") + ",";
+  json += "\"autoMode\":" + String(autoMode ? "true" : "false") + ",";
+  json += "\"direction\":" + String(direction)   + ",";
+  json += "\"uptime\":"  + String(totSec)        + ",";
+
+  int n     = hist.count;
+  int start = (hist.count < HISTORY_SIZE) ? 0 : hist.head;
+
+  // Macro-like helper: calcola l'indice reale nel buffer circolare
+  #define HIDX(i) ((start + (i)) % HISTORY_SIZE)
+
+  json += "\"history\":{";
+
+  // ts
+  json += "\"ts\":[";
+  for (int i = 0; i < n; i++) { if (i) json += ","; json += String(hist.ts[HIDX(i)]); }
+  json += "],";
+
+  // tBmp
+  json += "\"tBmp\":[";
+  for (int i = 0; i < n; i++) { if (i) json += ","; json += String(hist.tBmp[HIDX(i)], 1); }
+  json += "],";
+
+  // pBmp
+  json += "\"pBmp\":[";
+  for (int i = 0; i < n; i++) { if (i) json += ","; json += String(hist.pBmp[HIDX(i)], 1); }
+  json += "],";
+
+  // tAht
+  json += "\"tAht\":[";
+  for (int i = 0; i < n; i++) { if (i) json += ","; json += String(hist.tAht[HIDX(i)], 1); }
+  json += "],";
+
+  // hAht
+  json += "\"hAht\":[";
+  for (int i = 0; i < n; i++) { if (i) json += ","; json += String(hist.hAht[HIDX(i)], 1); }
+  json += "],";
+
+  // fan
+  json += "\"fan\":[";
+  for (int i = 0; i < n; i++) { if (i) json += ","; json += String((int)hist.fan[HIDX(i)]); }
+  json += "]";
+
+  #undef HIDX
+
+  json += "}}";
+
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Cache-Control", "no-cache");
+  server.send(200, "application/json", json);
+}
+
+void handleRoot() {
+  server.send_P(200, "text/html", HTML_PAGE);
+}
+
+// ===================== CLASSE MOTORE =====================
+class Robojax_L298N_DC_motor {
+public:
+  Robojax_L298N_DC_motor(int in1, int in2, int ena, int ch)
+    : _in1(in1), _in2(in2), _ena(ena), _ch(ch) {}
+
+  void begin() {
+    pinMode(_in1, OUTPUT);
+    pinMode(_in2, OUTPUT);
+    pinMode(_ena, OUTPUT);
+    ledcSetup(_ch, PWM_FREQ, PWM_RES);
+    ledcAttachPin(_ena, _ch);
+    coast();
+  }
+
+  void rotate(int /*id*/, int pct, int dir) {
+    uint8_t duty = map(pct, 0, 100, 0, 255);
+    digitalWrite(_in1, dir == CW ? HIGH : LOW);
+    digitalWrite(_in2, dir == CW ? LOW  : HIGH);
+    ledcWrite(_ch, duty);
+  }
+
+  void coast() {
+    ledcWrite(_ch, 0);
+    digitalWrite(_in1, LOW);
+    digitalWrite(_in2, LOW);
+  }
+
+private:
+  int _in1, _in2, _ena, _ch;
+};
+
+Robojax_L298N_DC_motor motorA(IN1, IN2, ENA, PWM_CHANNEL_A);
+Robojax_L298N_DC_motor motorB(IN3, IN4, ENB, PWM_CHANNEL_B);
+
+// ===================== CONTROLLO AUTOMATICO =====================
+void checkAutoControl() {
+  if (!autoMode) return;
+
+  sensors_event_t hum, temp;
+  aht.getEvent(&hum, &temp);
+  float h = hum.relative_humidity;
+  float t = temp.temperature;
+  if (isnan(h) || isnan(t)) return;
+
+  if (h > HUM_THRESHOLD) {
+    motorOn = true; direction = CCW;
+    motorA.rotate(1, desiredSpeedPct, direction);
+    motorB.rotate(1, desiredSpeedPct, direction);
+    digitalWrite(LED_PIN, HIGH);
+    return;
+  }
+  if (t > TEMP_THRESHOLD) {
+    motorOn = true; direction = CW;
+    motorA.rotate(1, desiredSpeedPct, direction);
+    motorB.rotate(1, desiredSpeedPct, direction);
+    digitalWrite(LED_PIN, HIGH);
+    return;
+  }
+  motorOn = false;
+  motorA.coast();
+  motorB.coast();
+  digitalWrite(LED_PIN, LOW);
+}
+
+// ===================== SETUP =====================
+void setup() {
+  Serial.begin(9600);
+
+  timer0 = timerBegin(0, 80, true);
+  timerStart(timer0);
+
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  while (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
+    Serial.println("Display non trovato");
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+
+  while (!bmp.begin(0x77))
+    Serial.println("BMP280 non trovato");
+
+  while (!aht.begin())
+    Serial.println("AHT20 non trovato");
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(LED_PIN, OUTPUT);
+
+  motorA.begin();  motorA.coast();
+  motorB.begin();  motorB.coast();
+
+  // WiFi
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("Connessione WiFi...");
+  display.display();
+
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  int tries = 0;
+  while (WiFi.status() != WL_CONNECTED && tries < 30) {
+    delay(500); Serial.print("."); tries++;
+  }
+
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWiFi OK — IP: " + WiFi.localIP().toString());
+    display.println("WiFi OK");
+    display.println(WiFi.localIP().toString());
+  } else {
+    Serial.println("\nWiFi non disponibile.");
+    display.println("WiFi fallito");
+    display.println("(no web server)");
+  }
+  display.display();
+  delay(2000);
+
+  server.on("/",     handleRoot);
+  server.on("/data", handleData);
+  server.begin();
+  Serial.println("Web server avviato.");
+}
+
+// ===================== LOOP =====================
+void loop() {
+  server.handleClient();
+
+  totSec  = timerRead(timer0) / 1000000ULL;
+  minutes = totSec / 60;
+  seconds = totSec % 60;
+
+  // Debounce pulsante
+  int reading = digitalRead(BUTTON_PIN);
+  if (reading != lastButtonState) lastDebounceTime = millis();
+  if ((millis() - lastDebounceTime) > DEBOUNCE_MS) {
+    if (reading != buttonState) {
+      buttonState = reading;
+      if (buttonState == LOW) {
+        autoMode    = false;
+        manualTimer = millis();
+        motorOn = !motorOn;
+        if (motorOn) {
+          direction = (direction == CW ? CCW : CW);
+          motorA.rotate(1, desiredSpeedPct, direction);
+          motorB.rotate(1, desiredSpeedPct, direction);
+          digitalWrite(LED_PIN, HIGH);
+        } else {
+          motorA.coast();
+          motorB.coast();
+          digitalWrite(LED_PIN, LOW);
+        }
+      }
+    }
+  }
+  lastButtonState = reading;
+
+  if (!autoMode && millis() - manualTimer > 30000)
+    autoMode = true;
+
+  checkAutoControl();
+
+  // Campionamento ogni secondo
+  if ((millis() - lastMs) > period) {
+    lastMs = millis();
+
+    tBmp = bmp.readTemperature();
+    pBmp = bmp.readPressure() / 100.0f;
+
+    sensors_event_t humEv, tempEv;
+    aht.getEvent(&humEv, &tempEv);
+    tAht = tempEv.temperature;
+    hAht = humEv.relative_humidity;
+
+    histPush(tBmp, pBmp, tAht, hAht, motorOn);
+
+    // OLED
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.printf("%02d:%02d", minutes, seconds);
+    if (WiFi.status() == WL_CONNECTED) {
+      display.print(" ");
+      display.print(WiFi.localIP().toString());
+    }
+    display.println();
+
+    if (useBmp) {
+      display.println("BMP280:");
+      display.println("T: " + String(tBmp, 1) + " C");
+      display.println("P: " + String(pBmp, 1) + " hPa");
+    } else {
+      display.println("AHT20:");
+      display.println("T: " + String(tAht, 1) + " C");
+      display.println("H: " + String(hAht, 1) + " %");
+    }
+    display.print("Fan:");
+    display.print(motorOn ? "ON " : "OFF");
+    display.println(autoMode ? "[A]" : "[M]");
+    display.display();
+
+    useBmp = !useBmp;
+  }
+
+  delay(10);
+}
